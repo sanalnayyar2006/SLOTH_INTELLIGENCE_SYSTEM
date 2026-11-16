@@ -1,5 +1,73 @@
-import { ProjectHomePage } from "./pages/ProjectHomePage";
+import { useRef, useState } from "react";
+
+import { AskPanel } from "@/features/ask/AskPanel";
+import { DecisionExplorer } from "@/features/decisions/DecisionExplorer";
+import { ImportForm } from "@/features/repositories/ImportForm";
+import { RepositoryDashboard } from "@/features/repositories/RepositoryDashboard";
+import type { RepositoryDetail } from "@/types/api";
 
 export default function App() {
-  return <ProjectHomePage />;
+  // The token lives only in memory and is sent with requests that need it.
+  const [token, setToken] = useState("");
+  const [refreshKey, setRefreshKey] = useState(0);
+  const [selected, setSelected] = useState<RepositoryDetail | null>(null);
+  const askSection = useRef<HTMLElement>(null);
+
+  function select(repository: RepositoryDetail | null) {
+    setSelected(repository);
+    // Take the user to the questions and decisions for the repo they picked.
+    if (repository) askSection.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  return (
+    <main className="mx-auto w-full max-w-5xl space-y-8 px-6 py-10">
+      <header>
+        <h1 className="text-3xl font-bold tracking-tight text-slate-950">
+          Decision Intelligence
+        </h1>
+        <p className="mt-2 text-slate-600">
+          Recover why an open-source project made its technical choices, with links
+          to the original GitHub discussions.
+        </p>
+      </header>
+
+      <section className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+        <h2 className="mb-4 text-lg font-semibold text-slate-900">Import a repository</h2>
+        <ImportForm
+          token={token}
+          onTokenChange={setToken}
+          onRegistered={() => setRefreshKey((key) => key + 1)}
+        />
+      </section>
+
+      <section className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+        <h2 className="mb-4 text-lg font-semibold text-slate-900">Repositories</h2>
+        <RepositoryDashboard
+          token={token}
+          refreshKey={refreshKey}
+          selectedId={selected?.id ?? null}
+          onSelect={select}
+        />
+      </section>
+
+      <section ref={askSection} className="scroll-mt-6 rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+        <h2 className="mb-4 text-lg font-semibold text-slate-900">
+          Ask {selected ? `about ${selected.full_name}` : "across all repositories"}
+        </h2>
+        <AskPanel repositoryFullName={selected?.full_name ?? null} />
+      </section>
+
+      <section className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+        <h2 className="mb-4 text-lg font-semibold text-slate-900">
+          {selected ? `Decisions in ${selected.full_name}` : "Decisions"}
+        </h2>
+        {selected ? (
+          // The key resets the explorer so one repo's decisions never show under another.
+          <DecisionExplorer key={selected.id} repositoryId={selected.id} />
+        ) : (
+          <p className="text-sm text-slate-600">Select a repository above to see its decisions.</p>
+        )}
+      </section>
+    </main>
+  );
 }

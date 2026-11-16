@@ -22,10 +22,12 @@ Update directly related documentation. Avoid adding infrastructure or dependenci
 
 ## Testing
 
-- Backend: from `backend/`, run `pytest`.
-- Frontend: from `frontend/`, run `npm test` and, for UI or build changes, `npm run build`.
+- Backend: from `backend/`, run `ruff check .`, `ruff format --check .`, and `pytest`.
+- Frontend: from `frontend/`, run `npm run lint`, `npm test`, and, for UI or build changes, `npm run build`.
 
-Unit tests should not require real GitHub credentials, a running database, or an Ollama server. Mock external integrations when they are introduced.
+CI runs the same checks on every pull request.
+
+Unit tests should not require real GitHub credentials, a running database, or an Ollama server. Mock external integrations when they are introduced. Database tests are the exception: they skip unless `TEST_DATABASE_URL` is set. See [docs/database-schema.md](docs/database-schema.md#database-tests).
 
 ## Code of conduct
 

@@ -1,33 +1,63 @@
-# Database schema plan
+# Database schema
 
-## Current state
+Models live in `backend/app/models/entities.py`. Migrations live in `backend/migrations/` and are managed with Alembic.
 
-SQLAlchemy models describe the initial PostgreSQL entities in `backend/app/models/entities.py`. They are not yet wired to API workflows, and the application does not create tables automatically. The basic test suite inspects contracts without connecting to a database.
-
-| Entity | Purpose | Important relationships/data |
+| Table | Purpose | Key columns |
 | --- | --- | --- |
-| `repositories` | Imported repository identity and sync cursor | Full name, GitHub URL, default branch, last sync time |
-| `discussions` | Source issue, pull request, comment, or review discussion | Repository, GitHub ID/type, timestamps, title/body, canonical source URL |
-| `decisions` | Extracted technical decision | Repository, context, rationale, alternatives, trade-offs, status |
-| `evidence_references` | Link a decision to supporting source material | Decision, discussion, excerpt, source URL |
-| `discussion_chunks` | Retrieval-ready text and embedding | Discussion, chunk order/text, 384-dimensional vector |
+| `repositories` | A connected GitHub repository and its sync state | `full_name` (unique), `github_id`, `sync_status`, `last_synced_at`, `last_sync_error` |
+| `discussions` | An issue or pull request | `kind`, `number` (unique per repository), `state`, `author`, `labels`, `source_url`, `merged_at` |
+| `comments` | Issue comments, PR review comments, and PR reviews | `kind`, `github_id` (unique per kind), `author`, `source_url` |
+| `document_chunks` | Searchable text with its embedding | `discussion_id`, `comment_id` (NULL for the issue/PR body), `ordinal`, `source_url`, `embedding vector(384)` |
+| `decisions` | An extracted technical decision | `title`, `decision`, `rationale`, `alternatives`, `trade_offs`, `status`, `confidence`, `extraction_model` |
+| `decision_evidence` | Links a decision to the discussion or comment that supports it | `decision_id`, `discussion_id`, `comment_id`, `excerpt`, `source_url` |
 
-Decision status is constrained to proposed, accepted, rejected, or unresolved. A merged pull request is not sufficient evidence to mark a decision accepted.
+## Notes
 
-## PostgreSQL and pgvector
+- **Idempotent imports.** Discussions are unique on `(repository_id, number)` and comments on `(kind, github_id)`, because GitHub uses a separate id sequence per comment kind. Re-importing updates rows instead of duplicating them.
+- **Sync checkpoint.** `repositories.last_synced_at` is the cursor for incremental sync (GitHub's `since` parameter).
+- **Embeddings** are stored on `document_chunks` rather than in a separate table, since each chunk has exactly one embedding. The 384 dimensions match `BAAI/bge-small-en-v1.5`. Changing the model means re-embedding.
+- **Decision status** is one of proposed, accepted, rejected, unresolved. A merged PR alone is not enough to mark a decision accepted.
+- **`confidence`** is the model's own score. It is not a calibrated probability.
+- A vector index (HNSW) will be added with the embedding pipeline, once there is data to tune it on.
+- PostgreSQL 15+ is required (the chunk unique constraint uses `NULLS NOT DISTINCT`).
 
-Configure `DATABASE_URL` in the root `.env`. The example uses Psycopg 3 and a local PostgreSQL database. The database must have the pgvector extension available before embedding persistence is used. No database server is started by this repository.
+## Running migrations
 
-The embedding column uses 384 dimensions, matching the planned `BAAI/bge-small-en-v1.5` model. Keep the model identifier and dimensionality aligned if the embedding model changes; existing vectors would need re-embedding.
+The pgvector extension must be installed on the server. The first migration runs `CREATE EXTENSION IF NOT EXISTS vector`, so the database user needs permission to create it, or a superuser can create it once beforehand.
 
-## Migrations
+From `backend/`:
 
-Alembic is not included yet: there is no deployed schema to migrate, and adding a migration history now would add setup without a concrete schema lifecycle. Introduce Alembic before sharing a mutable schema or deploying the database, and use migrations to enable the pgvector extension and create/update tables. Do not rely on `metadata.create_all` in production.
+```bash
+alembic upgrade head      # apply migrations
+alembic downgrade -1      # roll back one migration
+alembic revision --autogenerate -m "describe change"   # after editing models
+alembic check             # fails if models and migrations have drifted
+```
 
-## Future data integrity work
+`DATABASE_URL` is read from the root `.env`.
 
-- Make GitHub source identity unique within its repository and source type.
-- Preserve immutable source identifiers and canonical URLs.
-- Make synchronization idempotent and record a cursor or timestamp per repository.
-- Keep evidence references navigable back to original GitHub material.
-- Add indexes based on measured query patterns before optimizing.
+## Data access
+
+`backend/app/db/crud.py` has small functions for reading and writing repositories, discussions and comments. `upsert_discussion` and `upsert_comment` use PostgreSQL `ON CONFLICT` on the unique keys above, so re-importing the same GitHub item updates it in place.
+
+## Chunks
+
+`backend/app/processing/` turns discussions and comments into `document_chunks`:
+
+- Template comments (`<!-- -->`) and images are removed. Code blocks are kept as written.
+- Text is split on paragraph breaks into chunks of up to about 1,200 characters. A longer paragraph is cut into windows that overlap by 150 characters.
+- Each chunk starts with its issue or PR heading, e.g. `Issue #7: Vector storage`, so a comment chunk still has context.
+- Every chunk keeps its `source_url`. Author and time come from the linked discussion or comment.
+- Running it again keeps unchanged chunks and their embeddings, clears the embedding of edited ones, and deletes chunks whose text is gone.
+
+## Database tests
+
+Tests in `backend/tests/test_db/` run against a real database and are skipped unless `TEST_DATABASE_URL` is set. Each test runs in a transaction that is rolled back.
+
+```bash
+createdb decision_intelligence_test
+DATABASE_URL=postgresql+psycopg://user:pass@localhost:5432/decision_intelligence_test alembic upgrade head
+TEST_DATABASE_URL=postgresql+psycopg://user:pass@localhost:5432/decision_intelligence_test pytest
+```
+
+CI installs pgvector on the runner's PostgreSQL and runs these tests on every pull request.

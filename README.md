@@ -85,16 +85,21 @@ cd backend
 python -m venv .venv
 source .venv/bin/activate
 python -m pip install -r requirements-dev.txt
+python -m pip install -r requirements-embeddings.txt  # optional, for search
 uvicorn app.main:app --reload
 ```
 
 The API health check is at `http://localhost:8000/api/v1/health`. FastAPI provides interactive OpenAPI documentation at `http://localhost:8000/docs` and the schema at `http://localhost:8000/openapi.json`.
 
-Run backend tests from `backend/`:
+Run backend lint and tests from `backend/`:
 
 ```bash
+ruff check .
+ruff format --check .
 pytest
 ```
+
+`LOG_LEVEL` in `.env` controls application log verbosity.
 
 ### Frontend
 
@@ -104,12 +109,15 @@ npm ci
 npm run dev
 ```
 
-Run frontend tests and a production build from `frontend/`:
+Run frontend lint, tests, and a production build from `frontend/`:
 
 ```bash
+npm run lint
 npm test
 npm run build
 ```
+
+During development, Vite proxies `/api` requests to the backend at `http://localhost:8000`, so the frontend needs no CORS configuration.
 
 The initial screen is intentionally a foundation/status page; it does not yet call the backend or claim that repository import, decisions, or question answering work.
 
@@ -117,7 +125,7 @@ The initial screen is intentionally a foundation/status page; it does not yet ca
 
 Backend runtime dependencies are listed in `backend/requirements.txt`; test-only dependencies are in `backend/requirements-dev.txt`. `backend/pyproject.toml` configures the package and pytest. Frontend dependencies and scripts are managed with npm and `frontend/package-lock.json`.
 
-SQLAlchemy, Psycopg 3, and pgvector are included to establish PostgreSQL persistence boundaries. Alembic is deliberately deferred until schema evolution needs versioned migrations; introduce it before sharing or deploying a changing database schema. The frontend's `components.json` configures shadcn/ui generation; shadcn components are added as needed rather than installing a large UI bundle up front.
+SQLAlchemy, Psycopg 3, and pgvector handle PostgreSQL persistence, and Alembic manages schema migrations. Run `alembic upgrade head` from `backend/` after setting `DATABASE_URL`. See [docs/database-schema.md](docs/database-schema.md). The frontend's `components.json` configures shadcn/ui generation; shadcn components are added as needed rather than installing a large UI bundle up front.
 
 ## Planned implementation stages
 
