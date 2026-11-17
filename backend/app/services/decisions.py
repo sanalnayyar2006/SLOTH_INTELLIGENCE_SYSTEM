@@ -9,26 +9,29 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.db.session import SessionLocal
 from app.extraction.extractor import extract_decisions
-from app.generation.llm import LanguageModelError, get_language_model
-from app.models import Comment, Decision, DecisionEvidence, Discussion
+from app.generation.llm import (
+    InvalidModelOutput,
+    LanguageModelError,
+    get_language_model,
+)
+from app.models import Comment, Decision, DecisionEvidence, Discussion, Repository
 from app.schemas.decisions import DecisionRead, EvidenceRead
+from app.services.code_links import code_for
 
 logger = logging.getLogger(__name__)
 
 # About 15 seconds per thread on a laptop, so one run takes a few minutes.
 THREADS_PER_RUN = 15
-# Repositories with an extraction in progress. One server process, so memory is enough.
-extracting: set[UUID] = set()
 
 
-def list_decisions(session: Session, repository_id: UUID) -> list[DecisionRead]:
-    decisions = list(
-        session.scalars(
-            select(Decision)
-            .where(Decision.repository_id == repository_id)
-            .order_by(Decision.created_at.desc())
-        )
-    )
+def list_decisions(
+    session: Session, repository: Repository, ids: list[UUID] | None = None
+) -> list[DecisionRead]:
+    query = select(Decision).where(Decision.repository_id == repository.id)
+    if ids is not None:
+        query = query.where(Decision.id.in_(ids))
+    decisions = list(session.scalars(query.order_by(Decision.created_at.desc())))
+    code = code_for(session, repository, [d.id for d in decisions])
     evidence: dict[UUID, list[EvidenceRead]] = defaultdict(list)
     for item in session.scalars(
         select(DecisionEvidence).where(
@@ -46,6 +49,7 @@ def list_decisions(session: Session, repository_id: UUID) -> list[DecisionRead]:
             rationale=d.rationale,
             alternatives=d.alternatives,
             evidence=evidence[d.id],
+            code=code.get(d.id, []),
         )
         for d in decisions
     ]
@@ -73,26 +77,26 @@ def threads_to_extract(
     )
 
 
-def run_extraction(repository_id: UUID, discussion_ids: list[UUID]) -> None:
-    """Extract decisions thread by thread in the background, saving each one."""
-    try:
-        _extract_threads(discussion_ids)
-    finally:
-        extracting.discard(repository_id)
+def run_extraction(discussion_ids: list[UUID]) -> None:
+    """Extract decisions thread by thread, saving each one.
 
-
-def _extract_threads(discussion_ids: list[UUID]) -> None:
+    Threads already done are skipped, so a retried job picks up where it
+    stopped. A thread the model cannot handle is skipped; if the model is
+    down or too slow, the error is raised so the job queue can retry later.
+    """
     model, model_name = get_language_model(), get_settings().gemma_model
     with SessionLocal() as session:
         for discussion_id in discussion_ids:
             discussion = session.get(Discussion, discussion_id)
-            if discussion is None:
+            if discussion is None or discussion.decisions_extracted_at is not None:
                 continue
             try:
                 extract_decisions(session, model, model_name, discussion)
-            except LanguageModelError as error:
-                logger.warning("Extraction stopped: %s", error)
+            except InvalidModelOutput as error:
+                logger.warning("Skipped thread #%d: %s", discussion.number, error)
                 session.rollback()
-                return
+            except LanguageModelError:
+                session.rollback()
+                raise
             discussion.decisions_extracted_at = datetime.now(UTC)
             session.commit()

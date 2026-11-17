@@ -1,5 +1,6 @@
 from datetime import UTC, datetime
 from enum import StrEnum
+from typing import Any
 from uuid import UUID, uuid4
 
 from pgvector.sqlalchemy import Vector
@@ -35,6 +36,18 @@ class SyncStatus(StrEnum):
     PAUSED = "paused"
     FAILED = "failed"
     SYNCED = "synced"
+
+
+class JobKind(StrEnum):
+    SYNC = "sync"
+    EXTRACT = "extract"
+
+
+class JobStatus(StrEnum):
+    QUEUED = "queued"
+    RUNNING = "running"
+    DONE = "done"
+    FAILED = "failed"
 
 
 class CommentKind(StrEnum):
@@ -125,6 +138,28 @@ class Comment(Base):
     source_url: Mapped[str] = mapped_column(String(2048))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Review comments point at a line of code in a specific commit.
+    path: Mapped[str | None] = mapped_column(String(1024))
+    line: Mapped[int | None] = mapped_column(Integer)
+    commit_sha: Mapped[str | None] = mapped_column(String(64))
+
+
+class DiscussionFile(Base):
+    """A file changed by a pull request."""
+
+    __tablename__ = "discussion_files"
+    __table_args__ = (
+        UniqueConstraint("discussion_id", "path", name="uq_discussion_file"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    discussion_id: Mapped[UUID] = mapped_column(
+        ForeignKey("discussions.id", ondelete="CASCADE"), index=True
+    )
+    path: Mapped[str] = mapped_column(String(1024), index=True)
+    status: Mapped[str] = mapped_column(String(32))
+    additions: Mapped[int] = mapped_column(Integer, default=0)
+    deletions: Mapped[int] = mapped_column(Integer, default=0)
 
 
 class DocumentChunk(Base):
@@ -172,6 +207,8 @@ class Decision(Base):
     # Model self-reported score, not a calibrated probability.
     confidence: Mapped[float | None] = mapped_column(Float)
     extraction_model: Mapped[str] = mapped_column(String(255))
+    # Title and decision text, for matching pull requests by meaning.
+    embedding: Mapped[list[float] | None] = mapped_column(Vector(EMBEDDING_DIMENSION))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utc_now
     )
@@ -192,3 +229,29 @@ class DecisionEvidence(Base):
     )
     excerpt: Mapped[str] = mapped_column(Text)
     source_url: Mapped[str] = mapped_column(String(2048))
+
+
+class Job(Base):
+    """A sync or extraction waiting for, or done by, the background worker."""
+
+    __tablename__ = "jobs"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    repository_id: Mapped[UUID] = mapped_column(
+        ForeignKey("repositories.id", ondelete="CASCADE"), index=True
+    )
+    kind: Mapped[JobKind] = mapped_column(_enum_column(JobKind, "job_kind"))
+    status: Mapped[JobStatus] = mapped_column(
+        _enum_column(JobStatus, "job_status"), default=JobStatus.QUEUED, index=True
+    )
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    last_error: Mapped[str | None] = mapped_column(Text)
+    # A failed job waits until this time before it is tried again.
+    run_after: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utc_now
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utc_now
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

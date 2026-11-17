@@ -1,6 +1,12 @@
 from uuid import uuid4
 
-from app.extraction.prompt import MAX_THREAD_CHARS, build_prompt, build_thread
+from app.extraction.prompt import (
+    EXAMPLE_PLACEHOLDER,
+    MAX_THREAD_CHARS,
+    SYSTEM_PROMPT,
+    build_prompt,
+    build_thread,
+)
 from app.models import Comment, Discussion
 
 URL = "https://github.com/a/b/pull/7"
@@ -43,3 +49,37 @@ def test_long_threads_are_trimmed_to_fit_the_context() -> None:
 
     assert sum(len(m.text) for m in messages) <= MAX_THREAD_CHARS
     assert len(messages) < 11
+
+
+def test_long_threads_keep_the_body_and_the_newest_replies() -> None:
+    replies = [f"reply {i} " + "y" * 1500 for i in range(10)]
+    pr, comments = thread("Proposal", *replies)
+
+    messages = build_thread(pr, comments)
+
+    assert messages[0].id == "M0"
+    assert messages[-1].id == "M10"
+    assert messages[-1].comment_id == comments[-1].id
+    assert messages[1].id != "M1"
+
+
+def test_prompt_says_where_replies_were_left_out() -> None:
+    pr, comments = thread("Proposal", *["y" * 1500] * 10)
+
+    prompt = build_prompt(pr, build_thread(pr, comments))
+
+    assert "earlier replies left out]" in prompt
+    assert prompt.index("left out") < prompt.index('id="M10"')
+
+
+def test_short_threads_have_no_gap_note() -> None:
+    pr, comments = thread("Proposal", "Agreed", "Merged")
+
+    assert "left out" not in build_prompt(pr, build_thread(pr, comments))
+
+
+def test_prompt_example_uses_a_placeholder_not_a_real_tool() -> None:
+    # A real name in the example (it used to be ruff) gets copied into
+    # decisions for threads that never mention it.
+    assert EXAMPLE_PLACEHOLDER in SYSTEM_PROMPT.lower()
+    assert "ruff" not in SYSTEM_PROMPT.lower()

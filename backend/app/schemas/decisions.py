@@ -47,6 +47,14 @@ class EvidenceRead(BaseModel):
     source_url: str
 
 
+class CodeReference(BaseModel):
+    """A file a decision touched, with the line when a review pointed at one."""
+
+    path: str
+    line: int | None = None
+    url: str
+
+
 class DecisionRead(BaseModel):
     """What the decision explorer shows."""
 
@@ -56,6 +64,29 @@ class DecisionRead(BaseModel):
     rationale: list[str]
     alternatives: list[RejectedAlternative]
     evidence: list[EvidenceRead]
+    code: list[CodeReference] = []
+
+
+class PullRequestContextRequest(BaseModel):
+    repository_full_name: str
+    files: list[str] = Field(default=[], max_length=300)
+    # The PR's title and description, to also match decisions by meaning.
+    title: str = Field(default="", max_length=300)
+    body: str = Field(default="", max_length=65_536)
+    limit: int = Field(default=5, ge=1, le=20)
+
+
+class RelatedDecision(BaseModel):
+    decision: DecisionRead
+    matched_files: list[str]
+    # Meaning match with the PR's title and description, when close enough.
+    similarity: float | None = None
+    score: float
+
+
+class PullRequestContext(BaseModel):
+    repository_full_name: str
+    decisions: list[RelatedDecision]
 
 
 class ExtractionStarted(BaseModel):

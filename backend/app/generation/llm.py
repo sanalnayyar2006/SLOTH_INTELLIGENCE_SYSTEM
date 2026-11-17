@@ -55,9 +55,13 @@ class OllamaModel:
             "stream": False,
             # Deterministic output makes results repeatable and easier to evaluate.
             "options": {"temperature": 0},
+            # Stay in memory between questions instead of reloading every 5 minutes.
+            "keep_alive": "24h",
         }
         try:
             response = self._http.post("/api/chat", json=payload)
+        except httpx.TimeoutException as error:
+            raise LanguageModelError("Ollama took too long to answer") from error
         except httpx.TransportError as error:
             raise LanguageModelError("Ollama is not running") from error
         if response.status_code == 404:
@@ -91,7 +95,7 @@ def generate_validated(
         except (InvalidModelOutput, ValidationError) as error:
             logger.warning("Model output rejected (attempt %d): %s", attempt, error)
             if attempt == attempts:
-                raise LanguageModelError(
+                raise InvalidModelOutput(
                     "The model did not return valid output"
                 ) from error
     raise AssertionError("unreachable")
